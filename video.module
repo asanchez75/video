@@ -491,18 +491,10 @@ function video_feeds_processor_targets_alter(&$targets, $entity_type, $bundle_na
     $info = field_info_field($name);
     if ($info['type'] == 'video') {
       if (array_key_exists('fid', $info['columns'])) {
-        $targets[$name . ':fid'] = array(
-          'name' => t('@name: fid', array('@name' => $instance['label'])),
+        $targets[$name . ':uri'] = array(
+          'name' => t('@label: URI', array('@label' => $instance['label'])),
           'callback' => 'video_feeds_set_target',
-          'description' => t('The @label field of the entity.', array('@label' => $instance['label'])),
-          'real_target' => $name,
-        );
-      }
-      if (array_key_exists('thumbnail', $info['columns'])) {
-        $targets[$name . ':thumbnail'] = array(
-          'name' => t('@name: thumbnail', array('@name' => $instance['label'])),
-          'callback' => 'link_feeds_set_target',
-          'description' => t('The @label field of the entity.', array('@label' => $instance['label'])),
+          'description' => t('The URI of the @label field.', array('@label' => $instance['label'])),
           'real_target' => $name,
         );
       }
@@ -518,22 +510,66 @@ function video_feeds_processor_targets_alter(&$targets, $entity_type, $bundle_na
  * element the user has picked as a source.
  */
 function video_feeds_set_target($source, $entity, $target, array $values) {
-  list($field_name, $column) = explode(':', $target);
+  // Add default of uri for backwards compatibility.
+  list($field_name, $sub_field) = explode(':', $target . ':uri');
+  $info = field_info_field($field_name);
 
-  $field = isset($entity->$field_name) ? $entity->$field_name : array('und' => array());
-  $delta = 0;
+  if ($sub_field == 'uri') {
 
-  foreach ($values as $value) {
-    if (is_object($value) && ($value instanceof FeedsElement)) {
-      $value = $value->getValue();
+    foreach ($values as $k => $v) {
+      if (!($v instanceof FeedsEnclosure)) {
+        if (is_string($v)) {
+          $values[$k] = new FeedsEnclosure($v, file_get_mimetype($v));
+        }
+        else {
+          // Set the value for FALSE rather than remove it to keep our deltas
+          // correct.
+          $values[$k] = FALSE;
+        }
+      }
     }
 
-    if (is_scalar($value)) {
-      $field['und'][$delta][$column] = (string) $value;
+    $entity_type = $source->importer->processor->entityType();
+    $bundle = $source->importer->processor->bundle();
+
+    $instance_info = field_info_instance($entity_type, $field_name, $bundle);
+
+    // Determine file destination.
+    // @todo This needs review and debugging.
+    $data = array();
+    if (!empty($entity->uid)) {
+      $data[$entity_type] = $entity;
     }
-    $delta++;
+
+    $destination = file_field_widget_uri($info, $instance_info, $data);
   }
 
+  // Populate entity.
+  $field = isset($entity->$field_name) ? $entity->$field_name : array(LANGUAGE_NONE => array());
+  $delta = 0;
+  foreach ($values as $v) {
+    if ($info['cardinality'] == $delta) {
+      break;
+    }
+
+    if (!isset($field[LANGUAGE_NONE][$delta])) {
+      $field[LANGUAGE_NONE][$delta] = array();
+    }
+
+    if ($v) {
+      try {
+        $file = $v->getFile($destination);
+        $field[LANGUAGE_NONE][$delta] += (array) $file;
+        // @todo: Figure out how to properly populate this field.
+        $field[LANGUAGE_NONE][$delta]['display'] = 1;
+      }
+      catch (Exception $e) {
+        watchdog_exception('Feeds', $e, nl2br(check_plain($e)));
+      }
+    }
+
+    $delta++;
+  }
   $entity->$field_name = $field;
 }
 
